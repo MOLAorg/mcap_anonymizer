@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcap-anonymizer"
+dynamic = ["version"]
+description = "Blurs the faces in the images of MCAP files (ROS 2 bags), keeping everything else unchanged"
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.9"
+authors = [{name = "Jose Luis Blanco-Claraco"}]
+dependencies = [
+    "mcap>=1.1",
+    "numpy",
+    "opencv-python-headless",
+    "onnx",
+    "onnxruntime",
+    "pillow",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+mcap-anonymize = "mcap_anonymizer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/MOLAorg/mcap_anonymizer"
+
+[tool.setuptools.dynamic]
+version = {attr = "mcap_anonymizer.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mcap_anonymizer = ["models/*.onnx"]
