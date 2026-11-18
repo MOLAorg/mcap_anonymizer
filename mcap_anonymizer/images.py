@@ -113,11 +113,13 @@ class RawImage:
             self.image = (luma, chroma)
             self.planes = [(luma, 1.0, 1.0), (chroma[:, 0::2], sx, sy), (chroma[:, 1::2], sx, sy)]
 
-    @staticmethod
-    def _typed(rows, width, ch, depth, bo):
-        itemsize = 2 if depth == 'u2' else 1
-        view = rows[:, :width * ch * itemsize].view(np.dtype(bo + depth))
-        return view.reshape(rows.shape[0], width, ch) if ch > 1 else view
+    def _typed(self, rows, width, ch, depth, bo):
+        """Typed view (H x W [x C]) of the rows, sharing the buffer (works with row padding
+        and with any numpy version)."""
+        dt = np.dtype(bo + depth)
+        shape = (rows.shape[0], width, ch) if ch > 1 else (rows.shape[0], width)
+        strides = (self.step, ch * dt.itemsize, dt.itemsize)[:len(shape)]
+        return np.ndarray(shape, dtype=dt, buffer=self.buf, offset=0, strides=strides)
 
     def to_rgb8(self) -> np.ndarray:
         """RGB uint8 image for the detector."""
