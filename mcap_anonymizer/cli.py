@@ -1,4 +1,4 @@
-"""Command line interface: mcap_anonymize {run,detect,apply,review}."""
+"""Command line interface: mcap_anonymize {run,detect,verify,apply,review}."""
 
 import argparse
 import os
@@ -29,6 +29,14 @@ def _add_detect(p):
     g.add_argument('--upscale', type=float, default=1.0,
                    help='run the detector on the image scaled by this factor (e.g. 2 for small '
                         'faces in low-resolution images, about 4x slower)')
+    g.add_argument('--verify', choices=['person', 'none'], default='person',
+                   help='person (default): faces with a score below --verify-below are only kept '
+                        'if a person detector finds a person around them (removes most false '
+                        'positives on foliage, wheels...); none: keep every detection')
+    g.add_argument('--verify-below', type=float, default=0.7,
+                   help='faces with a lower score need a person around them (default 0.7)')
+    g.add_argument('--person-threshold', type=float, default=0.2,
+                   help='person detection score threshold (default 0.2)')
     g.add_argument('--backend', choices=['auto', 'opencv', 'onnxruntime'], default='auto',
                    help='auto: onnxruntime if installed, else OpenCV DNN')
     g.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto',
@@ -63,8 +71,9 @@ def _report(stats):
 
 
 def _detect(a, out_json):
-    return process.detect(a.input, out_json, _opts(a), a.threshold, a.upscale, a.jobs, a.threads,
-                          a.device, a.backend)
+    d = process.DetectOptions(a.threshold, a.upscale, a.verify, a.verify_below,
+                              a.person_threshold, a.jobs, a.threads, a.device, a.backend)
+    return process.detect(a.input, out_json, _opts(a), d)
 
 
 def cmd_detect(a):
@@ -81,6 +90,12 @@ def cmd_run(a):
     d = _detect(a, det)
     _report(process.apply(a.input, a.output, d, _opts(a), a.window, a.margin, a.mode))
     print(f'Detections: {det}')
+
+
+def cmd_verify(a):
+    d = process.DetectOptions(verify_below=a.verify_below, person_threshold=a.person_threshold,
+                              threads=a.threads, device=a.device, backend=a.backend)
+    process.verify(a.input, bx.load(a.detections), a.output, _opts(a), d)
 
 
 def cmd_review(a):
@@ -121,11 +136,20 @@ def main(argv=None):
     _add_apply(p)
     p.set_defaults(func=cmd_apply)
 
+    p = sub.add_parser('verify', help='apply the person check to an existing detections file')
+    p.add_argument('input', help='.mcap file or rosbag2 directory')
+    p.add_argument('detections', help='detections file (JSON)')
+    p.add_argument('output', help='output detections file (JSON)')
+    _add_topics(p)
+    _add_detect(p)
+    p.set_defaults(func=cmd_verify)
+
     p = sub.add_parser('review', help='write a video of an image topic to check the result')
     p.add_argument('input', help='.mcap file or rosbag2 directory (usually, the output)')
     p.add_argument('topic')
     p.add_argument('output', help='output .mp4')
-    p.add_argument('--detections', help='outline these detections in the video')
+    p.add_argument('--detections', help='outline these detections in the video (red: '
+                   'anonymized, yellow: rejected by the person check)')
     p.add_argument('--every', type=int, default=1, help='use one image out of EVERY')
     p.add_argument('--scale', type=float, default=0.5, help='image scale (default 0.5)')
     p.add_argument('--only-detections', action='store_true',

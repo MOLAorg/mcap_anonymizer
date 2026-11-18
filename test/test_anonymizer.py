@@ -335,3 +335,32 @@ def test_unsupported_video_topics(tmp_path):
     stats = process.apply(str(src), str(tmp_path / 'c.mcap'), det,
                           process.Options(ignore_unsupported=True))
     assert stats.ignored and len(read_all(tmp_path / 'c.mcap')[0]) == 2
+
+
+def test_person_verification(monkeypatch):
+    from mcap_anonymizer import detector
+
+    class Faces:
+        def __call__(self, rgb, threshold, upscale):
+            return np.array([[100, 50, 120, 70, 0.3],    # doubtful, at a person's head
+                             [300, 300, 320, 320, 0.3],  # doubtful, no person
+                             [500, 50, 540, 90, 0.9]],   # confident
+                            np.float32)
+
+    class Persons:
+        def __call__(self, rgb, threshold):
+            return np.array([[90, 40, 130, 200, 0.8]], np.float32)
+
+    monkeypatch.setattr(process, 'DETECTORS', (Faces(), Persons(), process.DetectOptions()))
+    kept, rejected = process.detect_image(np.zeros((480, 640, 3), np.uint8))
+    assert kept[:, 0].tolist() == [100, 500]
+    assert rejected[:, 0].tolist() == [300]
+    assert detector.face_has_person([100, 50, 120, 70], [[90, 40, 130, 200]])
+    assert not detector.face_has_person([100, 150, 120, 170], [[90, 40, 130, 200]])
+
+
+def test_person_detector_runs():
+    from mcap_anonymizer.detector import PersonDetector
+    p = PersonDetector(backend='opencv')
+    out = p(np.zeros((300, 400, 3), np.uint8))
+    assert out.ndim == 2 and out.shape[1] == 5

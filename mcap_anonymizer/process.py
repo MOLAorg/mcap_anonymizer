@@ -8,13 +8,13 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from . import __version__, boxes as bx, cdr, images
 from ._vendor.mcap.exceptions import UnsupportedCompressionError
 from ._vendor.mcap.records import Attachment, Channel, Message, Metadata, Schema
 from ._vendor.mcap.writer import CompressionType, Writer
 from .mcapio import Records, probe
-
-DETECTOR = None
 
 # Schemas that carry camera images this tool cannot anonymize (video streams, other formats)
 _UNSUPPORTED_IMAGE_SCHEMAS = re.compile(
@@ -153,64 +153,107 @@ def iter_images(path, opts, topics=None):
 # ---------------------------------------------------------------------------- detection
 
 
-def _worker_init(threads, device, backend):
-    global DETECTOR
-    from .detector import CenterFace
-    DETECTOR = CenterFace(threads=threads, device=device, backend=backend)
+@dataclass
+class DetectOptions:
+    threshold: float = 0.2         # face score threshold
+    upscale: float = 1.0
+    verify: str = 'person'         # 'person': confirm doubtful faces with a person detector
+    verify_below: float = 0.7      # faces with a lower score need a person around them
+    person_threshold: float = 0.2
+    jobs: int = 1
+    threads: int = 0
+    device: str = 'auto'
+    backend: str = 'auto'
+
+
+DETECTORS = None
+
+
+def _worker_init(o: DetectOptions):
+    global DETECTORS
+    from .detector import CenterFace, PersonDetector
+    faces = CenterFace(threads=o.threads, device=o.device, backend=o.backend)
+    persons = None
+    if o.verify == 'person':
+        persons = PersonDetector(threads=o.threads, device=o.device, backend=o.backend)
+    DETECTORS = (faces, persons, o)
+
+
+def detect_image(rgb):
+    """(kept, rejected) face boxes of an RGB image, with the worker's detectors."""
+    from .detector import face_has_person
+    faces, persons, o = DETECTORS
+    boxes = faces(rgb, o.threshold, o.upscale)
+    if persons is None or len(boxes) == 0 or boxes[:, 4].min() >= o.verify_below:
+        return boxes, boxes[:0]
+    people = persons(rgb, o.person_threshold)
+    keep = np.array([b[4] >= o.verify_below or face_has_person(b, people) for b in boxes])
+    return boxes[keep], boxes[~keep]
 
 
 def _worker_detect(job):
-    topic, t, data, compressed, threshold, upscale = job
+    topic, t, data, compressed = job
     try:
         rgb = decode_rgb(data, compressed)
     except images.NonVisualEncoding as e:
-        return topic, t, None, str(e)
-    return topic, t, DETECTOR(rgb, threshold, upscale), None
+        return topic, t, None, None, str(e)
+    kept, rejected = detect_image(rgb)
+    return topic, t, kept, rejected, None
 
 
-def _jobs(files, opts, threshold, upscale, counts):
+def _jobs(files, opts, counts):
     for f in files:
         for topic, t, data, compressed in iter_images(f, opts):
             counts[topic] = counts.get(topic, 0) + 1
-            yield topic, t, bytes(data), compressed, threshold, upscale
+            yield topic, t, bytes(data), compressed
 
 
-def detect(inp, out_json, opts=Options(), threshold=0.2, upscale=1.0, jobs=1, threads=0,
-           device='auto', backend='auto', progress=True):
+def detect(inp, out_json, opts=Options(), dopts=DetectOptions(), progress=True):
     files = bag_files(inp)
     counts = {}
     skipped = {}
     result = {'version': 1, 'tool': f'mcap_anonymizer {__version__}',
-              'detector': {'model': 'CenterFace', 'threshold': threshold, 'upscale': upscale},
-              'topics': {}, 'manual': [], 'frames': counts}
+              'detector': {'model': 'CenterFace', 'threshold': dopts.threshold,
+                           'upscale': dopts.upscale, 'verify': dopts.verify,
+                           'verify_below': dopts.verify_below,
+                           'person_threshold': dopts.person_threshold},
+              'topics': {}, 'rejected': {}, 'manual': [], 'frames': counts}
     t0 = time.time()
     n = 0
-    gen = _jobs(files, opts, threshold, upscale, counts)
-    if jobs > 1:
-        pool = mp.get_context('spawn').Pool(jobs, _worker_init, (threads, device, backend))
+    gen = _jobs(files, opts, counts)
+    if dopts.jobs > 1:
+        pool = mp.get_context('spawn').Pool(dopts.jobs, _worker_init, (dopts,))
         it = pool.imap(_worker_detect, gen, chunksize=4)
     else:
-        _worker_init(threads, device, backend)
+        _worker_init(dopts)
         it = map(_worker_detect, gen)
         if progress:
-            print(f'Detector: {DETECTOR.describe()}', file=sys.stderr)
+            print(f'Detector: {DETECTORS[0].describe()}', file=sys.stderr)
     nfaces = 0
+    nrej = 0
     try:
-        for topic, t, b, skip in it:
+        for topic, t, kept, rejected, skip in it:
             n += 1
             if skip:
                 skipped[topic] = skip
-            elif len(b):
-                result['topics'].setdefault(topic, {})[str(t)] = bx.as_list(b)
+                continue
+            if len(kept):
+                result['topics'].setdefault(topic, {})[str(t)] = bx.as_list(kept)
                 nfaces += 1
+            if len(rejected):
+                result['rejected'].setdefault(topic, {})[str(t)] = bx.as_list(rejected)
+                nrej += 1
             if progress and n % 200 == 0:
                 print(f'\r{n} images, {nfaces} with faces, {n / (time.time() - t0):.1f} img/s',
                       end='', file=sys.stderr, flush=True)
     finally:
-        if jobs > 1:
+        if dopts.jobs > 1:
             pool.terminate()
     if progress:
         print(f'\r{n} images, {nfaces} with faces, {time.time() - t0:.0f} s', file=sys.stderr)
+        if nrej:
+            print(f'{nrej} images with doubtful detections rejected (no person around them); '
+                  'listed in "rejected"', file=sys.stderr)
         for topic, enc in sorted(skipped.items()):
             print(f'Skipped {topic}: not a camera image ({enc})', file=sys.stderr)
         if n == 0:
@@ -218,6 +261,42 @@ def detect(inp, out_json, opts=Options(), threshold=0.2, upscale=1.0, jobs=1, th
     result['skipped'] = skipped
     bx.save(out_json, result)
     return result
+
+
+def verify(inp, detections, out_json, opts=Options(), dopts=DetectOptions(), progress=True):
+    """Runs the person check on an existing detections file (e.g. made with --verify none):
+    doubtful detections without a person around them move to "rejected"."""
+    from .detector import PersonDetector, face_has_person
+    persons = PersonDetector(threads=dopts.threads, device=dopts.device, backend=dopts.backend)
+    below = dopts.verify_below
+    todo = {topic: {int(t) for t, bs in frames.items() if min(b[4] for b in bs) < below}
+            for topic, frames in detections['topics'].items()}
+    rejected = detections.setdefault('rejected', {})
+    n = 0
+    nrej = 0
+    for f in bag_files(inp):
+        for topic, t, data, compressed in iter_images(f, opts, set(todo)):
+            if t not in todo[topic]:
+                continue
+            boxes = detections['topics'][topic][str(t)]
+            people = persons(decode_rgb(data, compressed), dopts.person_threshold)
+            keep = [b for b in boxes if b[4] >= dopts.verify_below or face_has_person(b, people)]
+            drop = [b for b in boxes if b not in keep]
+            n += 1
+            if drop:
+                nrej += 1
+                rejected.setdefault(topic, {})[str(t)] = drop
+                if keep:
+                    detections['topics'][topic][str(t)] = keep
+                else:
+                    del detections['topics'][topic][str(t)]
+    detections.setdefault('detector', {}).update(
+        {'verify': 'person', 'verify_below': dopts.verify_below,
+         'person_threshold': dopts.person_threshold})
+    if progress:
+        print(f'{n} images checked, doubtful detections rejected in {nrej}', file=sys.stderr)
+    bx.save(out_json, detections)
+    return detections
 
 
 # ---------------------------------------------------------------------------- rewriting

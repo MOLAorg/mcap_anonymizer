@@ -10,6 +10,7 @@ from . import boxes as bx, process
 def review(inp, topic, out, detections=None, every=1, scale=0.5, only_detections=False):
     det = bx.load(detections) if detections else None
     frames = det['topics'].get(topic, {}) if det else {}
+    rejected = det.get('rejected', {}).get(topic, {}) if det else {}
     det_times = sorted(int(t) for t in frames)
     opts = process.Options(ignore_unsupported=True)
     writer = None
@@ -30,10 +31,11 @@ def review(inp, topic, out, detections=None, every=1, scale=0.5, only_detections
                     continue
             rgb = process.decode_rgb(data, compressed)
             img = cv2.cvtColor(cv2.resize(rgb, None, fx=scale, fy=scale), cv2.COLOR_RGB2BGR)
-            for b in frames.get(str(t), []):
-                p1 = (int(b[0] * scale), int(b[1] * scale))
-                p2 = (int(b[2] * scale), int(b[3] * scale))
-                cv2.rectangle(img, p1, p2, (0, 0, 255), 1)
+            for boxes, color in ((rejected, (0, 255, 255)), (frames, (0, 0, 255))):
+                for b in boxes.get(str(t), []):
+                    p1 = (int(b[0] * scale), int(b[1] * scale))
+                    p2 = (int(b[2] * scale), int(b[3] * scale))
+                    cv2.rectangle(img, p1, p2, color, 1)
             cv2.putText(img, f'{(t - t0) / 1e9:8.2f} s', (8, 20), cv2.FONT_HERSHEY_SIMPLEX,
                         0.6, (0, 255, 255), 2)
             if writer is None:

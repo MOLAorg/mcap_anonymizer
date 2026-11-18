@@ -28,9 +28,12 @@ else exactly as it was recorded.
   chunk) are processed up to their last complete record. The output is always a complete,
   indexed MCAP file.
 
-Faces are detected with [CenterFace](https://github.com/Star-Clouds/CenterFace), a small ONNX
-model that runs with OpenCV (no extra dependencies), or with
-[onnxruntime](https://onnxruntime.ai/) on the CPU or an NVIDIA GPU.
+Faces are detected with [CenterFace](https://github.com/Star-Clouds/CenterFace) at a low
+threshold (high recall), and doubtful detections are kept only if a person detector
+([YOLOX-s](https://github.com/Megvii-BaseDetection/YOLOX)) finds a person around them, which
+removes most false positives (foliage, wheels, machinery...). Both are ONNX models that run with
+OpenCV (no extra dependencies), or with [onnxruntime](https://onnxruntime.ai/) on the CPU or an
+NVIDIA GPU. All the bundled code and models have permissive licenses (BSD, MIT, Apache-2.0).
 
 ## Install
 
@@ -91,7 +94,8 @@ mcap_anonymize detect input.mcap detections.json
 # 2. Anonymize (fast: only reads, blurs and writes)
 mcap_anonymize apply input.mcap detections.json output.mcap
 
-# 3. Check the result: one video per camera, with the detections outlined in red
+# 3. Check the result: one video per camera, with the anonymized faces outlined in red, and the
+#    doubtful detections rejected by the person check in yellow
 mcap_anonymize review output.mcap /camera/left/image_raw left.mp4 --detections detections.json
 
 # 4. If a face was missed, add a manual box to detections.json (see below) and apply again
@@ -104,6 +108,8 @@ publishing. Keep the original files: anonymization cannot be undone.
 
 - `mcap_anonymize run INPUT OUTPUT [--detections FILE]`: detect + apply.
 - `mcap_anonymize detect INPUT DETECTIONS`: writes the detections file.
+- `mcap_anonymize verify INPUT DETECTIONS OUTPUT_DETECTIONS`: applies the person check to an
+  existing detections file (e.g. one made with `--verify none`).
 - `mcap_anonymize apply INPUT DETECTIONS OUTPUT`: anonymizes with a detections file.
 - `mcap_anonymize review INPUT TOPIC OUTPUT.mp4`: video of one image topic.
 
@@ -117,11 +123,14 @@ directory, with the same file names and a copy of `metadata.yaml`).
 | `--drop REGEX` | none | run, detect, apply | Remove the topics matching this regex from the output |
 | `--ignore-unsupported` | off | run, detect, apply | Copy topics that may carry images but cannot be anonymized as they are (with a warning), instead of stopping |
 | `--threshold T` | 0.2 | run, detect | Detection score threshold. Lower finds more faces, and more false positives |
+| `--verify` | person | run, detect | `person`: faces scoring below `--verify-below` are only kept with a person around them (their center in the head region of a person box); `none`: keep every detection (maximum recall, more false positives) |
+| `--verify-below S` | 0.7 | run, detect, verify | Faces with a lower score need a person around them |
+| `--person-threshold T` | 0.2 | run, detect, verify | Person detection score threshold |
 | `--upscale F` | 1.0 | run, detect | Run the detector on the image scaled by F (e.g. 2 for small faces in low-resolution images; about F² times slower) |
-| `--backend` | auto | run, detect | `opencv`, `onnxruntime`, or `auto` (onnxruntime if installed) |
-| `--device` | auto | run, detect | `cpu` or `cuda` (onnxruntime-gpu) |
+| `--backend` | auto | run, detect, verify | `opencv`, `onnxruntime`, or `auto` (onnxruntime if installed) |
+| `--device` | auto | run, detect, verify | `cpu` or `cuda` (onnxruntime-gpu) |
 | `--jobs N` | 1 | run, detect | Parallel detector processes (CPU) |
-| `--threads N` | 0 | run, detect | Threads of each detector process (0: library default) |
+| `--threads N` | 0 | run, detect, verify | Threads of each detector process (0: library default) |
 | `--window S` | 0.3 | run, apply | The detections of each frame are also applied to the frames within ±S seconds |
 | `--margin M` | 0.2 | run, apply | Each box is enlarged by M times its size on each side |
 | `--mode` | blur | run, apply | `blur` (strong box blur), `pixelate` (about 6 blocks across the face) or `solid` (black) |
@@ -140,6 +149,9 @@ third of the face size, applied twice, which leaves no recognizable detail.
   "topics": {
     "/camera/image_raw": {"1793639112324938012": [[412.5, 120.0, 448.0, 165.5, 0.81]]}
   },
+  "rejected": {
+    "/camera/image_raw": {"1793639113324938012": [[10.0, 300.5, 25.0, 318.0, 0.23]]}
+  },
   "manual": [
     {"topic": "/camera/image_raw", "from": 1793639112000000000, "to": 1793639115000000000,
      "box": [400, 120, 460, 190]}
@@ -149,7 +161,9 @@ third of the face size, applied twice, which leaves no recognizable detail.
 ```
 
 `topics` lists, for each image topic, the frames with detections: message log time (ns) ->
-boxes `[x1, y1, x2, y2, score]` in pixels. `manual` boxes (written by hand) apply to every
+boxes `[x1, y1, x2, y2, score]` in pixels. `rejected` lists, in the same way, the doubtful
+detections discarded by the person check: they are not anonymized (move a box from `rejected`
+to `topics` to anonymize it anyway). `manual` boxes (written by hand) apply to every
 frame of their topic with a log time in `[from, to]` (ns), as they are (no margin). `frames`
 counts the processed images.
 
@@ -198,8 +212,11 @@ the bag size.
   behind or from the side, backlit, blurred by motion or partially occluded can be missed in
   some frames. The temporal window and the margin reduce this; the review step and manual
   boxes cover the rest.
-- False positives (patches of foliage, signs...) are blurred too. This only affects small
-  regions, and can be reduced with a higher `--threshold`.
+- The person check discards doubtful faces with no detectable body around them: a face seen
+  through a window or behind an obstacle, with only the face visible, may then be missed if it
+  also scores low. Use `--verify none` for maximum recall (at the cost of blurring false
+  positives too), and check the yellow boxes in the review video.
+- Remaining false positives are blurred too; this only affects small regions.
 - Faces are the only personal data handled: license plates, screens or documents are not.
 - Depth images, point clouds and other sensor data are not modified.
 
@@ -209,7 +226,9 @@ the bag size.
    (`sensor_msgs` Image/CompressedImage, CDR) are located; their `data` field is found by
    parsing the CDR header fields, so no ROS message libraries are needed.
 2. **Detection**: each image is converted to RGB (demosaicing Bayer, converting YUV, stretching
-   16-bit) only to run CenterFace on it.
+   16-bit) only to run CenterFace on it. In images with doubtful faces (score below
+   `--verify-below`), YOLOX-s looks for people, and each doubtful face is kept only if its center
+   is in the head region (upper 45 %) of a person box.
 3. **Anonymization**: for each frame, the boxes of the frame and of its neighbors in time are
    enlarged and blurred on the original buffer: each plane of the encoding (the image, the four
    Bayer color planes, or the Y, U and V samples) is filtered in its own resolution and data
@@ -222,11 +241,13 @@ the bag size.
 
 BSD 3-Clause (see [LICENSE](LICENSE)).
 
-Bundled third-party code, all MIT licensed (licenses next to it):
+Bundled third-party code and models (licenses next to them):
 
 - `mcap_anonymizer/_vendor/mcap`: the [mcap](https://github.com/foxglove/mcap) Python library
-  1.6.0, by Foxglove (one import made relative, version string fixed).
+  1.6.0, by Foxglove (MIT; one import made relative, version string fixed).
 - `mcap_anonymizer/models/centerface.onnx`: CenterFace's `centerface_bnmerged.onnx`, with its
-  input and output sizes declared as dynamic.
-- The detector decoding code is based on CenterFace and on its adaptation in
-  [deface](https://github.com/ORB-HD/deface).
+  input and output sizes declared as dynamic (MIT).
+- `mcap_anonymizer/models/yolox_s.onnx`: the YOLOX-s model released by Megvii
+  ([YOLOX](https://github.com/Megvii-BaseDetection/YOLOX), Apache-2.0), unmodified.
+- The face detector decoding code is based on CenterFace and on its adaptation in
+  [deface](https://github.com/ORB-HD/deface) (MIT).
