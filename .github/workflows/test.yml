@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [humble, jazzy, kilted, rolling]
+        distro: [humble, jazzy, kilted, lyrical, rolling]
     steps:
       - uses: actions/checkout@v5
         with:

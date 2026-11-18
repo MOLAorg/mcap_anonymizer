@@ -3,6 +3,14 @@
 [![test](https://github.com/MOLAorg/mcap_anonymizer/actions/workflows/test.yml/badge.svg)](https://github.com/MOLAorg/mcap_anonymizer/actions/workflows/test.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
 
+| Distro | Build dev | Release |
+| --- | --- | --- |
+| ROS 2 Humble (u22.04) | [![Build Status](https://build.ros2.org/job/Hdev__mcap_anonymizer__ubuntu_jammy_amd64/badge/icon)](https://build.ros2.org/job/Hdev__mcap_anonymizer__ubuntu_jammy_amd64/) | [![Version](https://img.shields.io/ros/v/humble/mcap_anonymizer)](https://index.ros.org/?pkgs=mcap_anonymizer&search_packages=true#humble) |
+| ROS 2 Jazzy (u24.04) | [![Build Status](https://build.ros2.org/job/Jdev__mcap_anonymizer__ubuntu_noble_amd64/badge/icon)](https://build.ros2.org/job/Jdev__mcap_anonymizer__ubuntu_noble_amd64/) | [![Version](https://img.shields.io/ros/v/jazzy/mcap_anonymizer)](https://index.ros.org/?pkgs=mcap_anonymizer&search_packages=true#jazzy) |
+| ROS 2 Kilted (u24.04) | [![Build Status](https://build.ros2.org/job/Kdev__mcap_anonymizer__ubuntu_noble_amd64/badge/icon)](https://build.ros2.org/job/Kdev__mcap_anonymizer__ubuntu_noble_amd64/) | [![Version](https://img.shields.io/ros/v/kilted/mcap_anonymizer)](https://index.ros.org/?pkgs=mcap_anonymizer&search_packages=true#kilted) |
+| ROS 2 Lyrical (u26.04) | [![Build Status](https://build.ros2.org/job/Ldev__mcap_anonymizer__ubuntu_resolute_amd64/badge/icon)](https://build.ros2.org/job/Ldev__mcap_anonymizer__ubuntu_resolute_amd64/) | [![Version](https://img.shields.io/ros/v/lyrical/mcap_anonymizer)](https://index.ros.org/?pkgs=mcap_anonymizer&search_packages=true#lyrical) |
+| ROS 2 Rolling (u26.04) | [![Build Status](https://build.ros2.org/job/Rdev__mcap_anonymizer__ubuntu_resolute_amd64/badge/icon)](https://build.ros2.org/job/Rdev__mcap_anonymizer__ubuntu_resolute_amd64/) | [![Version](https://img.shields.io/ros/v/rolling/mcap_anonymizer)](https://index.ros.org/?pkgs=mcap_anonymizer&search_packages=true#rolling) |
+
 Blurs the faces in the camera images of [MCAP](https://mcap.dev/) files (ROS 2 bags), so
 datasets recorded among people can be shared without privacy issues, while keeping everything
 else exactly as it was recorded.
@@ -37,7 +45,7 @@ NVIDIA GPU. All the bundled code and models have permissive licenses (BSD, MIT, 
 
 ## Install
 
-### ROS 2 (Humble, Jazzy, Kilted, Rolling)
+### ROS 2 (Humble, Jazzy, Kilted, Lyrical, Rolling)
 
 From source, in a colcon workspace:
 
