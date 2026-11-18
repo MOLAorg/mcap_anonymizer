@@ -3,15 +3,44 @@ on:
   push:
   pull_request:
 jobs:
-  test:
+  ros:
+    name: ROS 2 ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    container: ros:${{ matrix.distro }}-ros-base
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy, kilted, rolling]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/mcap_anonymizer
+      - name: Dependencies
+        run: |
+          apt-get update
+          rosdep update --rosdistro ${{ matrix.distro }}
+          rosdep install --from-paths src --ignore-src -y --rosdistro ${{ matrix.distro }}
+      - name: Build and test
+        shell: bash
+        run: |
+          source /opt/ros/${{ matrix.distro }}/setup.bash
+          colcon build --event-handlers console_direct+
+          colcon test --event-handlers console_direct+
+          colcon test-result --verbose
+          source install/setup.bash
+          ros2 run mcap_anonymizer mcap_anonymize --version
+  pip:
+    name: pip, Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python: ['3.10', '3.12']
+        python: ['3.10', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install -e '.[test]'
-      - run: pytest -q tests
+      - run: pip install -e '.[test,onnxruntime,compression]'
+      - run: pytest -q
+      - run: mcap_anonymize --version

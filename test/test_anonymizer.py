@@ -5,11 +5,11 @@ import struct
 import cv2
 import numpy as np
 import pytest
-from mcap.reader import make_reader
-from mcap.writer import CompressionType, Writer
 from PIL import Image as PILImage
 
 from mcap_anonymizer import boxes as bx, cdr, images, process
+from mcap_anonymizer._vendor.mcap.reader import make_reader
+from mcap_anonymizer._vendor.mcap.writer import CompressionType, Writer
 from mcap_anonymizer.cli import main
 
 
@@ -82,27 +82,74 @@ def test_cdr_roundtrip(frame_id):
     assert out[vo.data_offset:vo.data_offset + vo.data_len] == b'12345'
 
 
-def test_bayer_planes_independent_and_outside_untouched():
-    h, w = 64, 80
-    img = np.zeros((h, w), np.uint8)
-    img[0::2, 0::2] = 30    # G
-    img[0::2, 1::2] = 200   # R
-    img[1::2, 0::2] = 100   # B
-    img[1::2, 1::2] = 30    # G
-    noise = textured(h, w) // 8
-    img = img + noise
-    orig = img.copy()
-    box = (20, 10, 60, 50)
-    images.anonymize(img, 'bayer_grbg8', [box], 'blur')
-    changed = img != orig
-    ys, xs = np.nonzero(changed)
-    assert changed.any()
-    assert xs.min() >= box[0] - 1 and xs.max() <= box[2] and ys.min() >= box[1] - 1
-    assert ys.max() <= box[3]
-    # Each mosaic plane keeps its own level: no mixing between colors
-    for (dy, dx), base in {(0, 0): 30, (0, 1): 200, (1, 0): 100, (1, 1): 30}.items():
-        plane = img[dy::2, dx::2]
-        assert np.all(plane >= base) and np.all(plane <= base + 32)
+ENCODINGS = ['mono8', 'mono16', '8UC1', '8UC3', '16UC3', 'rgb8', 'bgr8', 'rgba8', 'bgra8',
+             'rgb16', 'bgra16', 'bayer_rggb8', 'bayer_bggr8', 'bayer_gbrg8', 'bayer_grbg8',
+             'bayer_grbg16', 'uyvy', 'yuv422', 'yuyv', 'yuv422_yuy2', 'nv21', 'nv12', 'nv24']
+
+
+def _buffer_size(encoding, h, w):
+    if encoding in ('nv21', 'nv12'):
+        return w, h * w * 3 // 2
+    if encoding == 'nv24':
+        return w, h * w * 3
+    probe = images.RawImage(bytes(h * w * 8), h, w, w * 8, encoding)
+    plane = probe.planes[0][0]
+    if probe.kind == 'yuv422':
+        return w * 2, h * w * 2
+    bpp = plane.dtype.itemsize * (plane.shape[2] if plane.ndim == 3 else 1)
+    return w * bpp, h * w * bpp
+
+
+@pytest.mark.parametrize('bigendian', [False, True])
+@pytest.mark.parametrize('encoding', ENCODINGS)
+def test_planes_independent_and_outside_untouched(encoding, bigendian):
+    h, w = 48, 64
+    step, size = _buffer_size(encoding, h, w)
+    img = images.RawImage(bytes(size), h, w, step, encoding, bigendian)
+    rng = np.random.default_rng(3)
+    levels = []
+    for i, (plane, _, _) in enumerate(img.planes):
+        nch = plane.shape[2] if plane.ndim == 3 else 1
+        lv = [40 + 50 * ((i + c) % 4) for c in range(nch)]
+        scale = 256 if plane.dtype.itemsize == 2 else 1
+        noise = rng.integers(0, 16, plane.shape).astype(np.int64)
+        base = np.array(lv) if nch > 1 else lv[0]
+        plane[...] = (base + noise) * scale
+        levels.append((np.array(lv) * scale, 16 * scale))
+    data = img.tobytes()
+
+    out = images.RawImage(data, h, w, step, encoding, bigendian)
+    assert out.to_rgb8().shape == (h, w, 3)
+    box = (20, 12, 52, 40)
+    out.anonymize([box])
+    ref = images.RawImage(data, h, w, step, encoding, bigendian)
+    changed_any = False
+    for (p_new, sx, sy), (p_ref, _, _), (lv, span) in zip(out.planes, ref.planes, levels):
+        diff = p_new != p_ref
+        if diff.ndim == 3:
+            diff = diff.any(axis=2)
+        ys, xs = np.nonzero(diff)
+        if len(xs):
+            changed_any = True
+            assert xs.min() >= np.floor(box[0] * sx) and xs.max() < np.ceil(box[2] * sx)
+            assert ys.min() >= np.floor(box[1] * sy) and ys.max() < np.ceil(box[3] * sy)
+        # No mixing between planes or channels: each keeps its own range of values
+        v = p_new.astype(np.int64)
+        assert np.all(v >= lv) and np.all(v < lv + span)
+    assert changed_any
+
+
+def test_encoding_classes():
+    with pytest.raises(images.NonVisualEncoding):
+        images.check_encoding('32FC1')
+    with pytest.raises(images.NonVisualEncoding):
+        images.check_encoding('16UC1')
+    with pytest.raises(images.UnsupportedEncoding):
+        images.check_encoding('weird8')
+    with pytest.raises(images.NonVisualEncoding):
+        images.compressed_kind('16UC1; compressedDepth png')
+    assert images.compressed_kind('bgr8; jpeg compressed bgr8') == 'jpeg'
+    assert images.compressed_kind('mono16; png compressed mono16') == 'png'
 
 
 @pytest.mark.parametrize('encoding,ch', [('rgb8', 3), ('bgra8', 4), ('mono8', None)])
@@ -111,9 +158,25 @@ def test_raw_roundtrip(encoding, ch):
     msg = ser_image(img, encoding, pad=3)
     v = cdr.parse(msg, False)
     payload = msg[v.data_offset:v.data_offset + v.data_len]
-    arr = images.raw_array(payload, v.height, v.width, v.step, v.encoding)
-    assert np.array_equal(arr, img)
-    assert images.array_to_bytes(arr, payload, v.step) == payload
+    raw = images.RawImage(payload, v.height, v.width, v.step, v.encoding)
+    assert np.array_equal(raw.planes[0][0], img)
+    assert raw.tobytes() == payload
+
+
+@pytest.mark.parametrize('dtype,ch', [(np.uint8, 3), (np.uint8, None), (np.uint16, None)])
+def test_png_lossless_outside(dtype, ch):
+    shape = (40, 50) if ch is None else (40, 50, ch)
+    img = (np.random.default_rng(0).integers(0, 255, shape) *
+           (257 if dtype == np.uint16 else 1)).astype(dtype)
+    ok, png = cv2.imencode('.png', img)
+    box = (10, 10, 30, 30)
+    out = images.anonymize_compressed(png.tobytes(), 'png', [box])
+    res = cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert res.dtype == dtype and res.shape == img.shape
+    outside = np.ones(img.shape[:2], bool)
+    outside[10:30, 10:30] = False
+    assert np.array_equal(res[outside], img[outside])
+    assert not np.array_equal(res[12:28, 12:28], img[12:28, 12:28])
 
 
 def _jpeg(img, q=90):
@@ -226,3 +289,44 @@ def test_cli_run_with_detector(tmp_path):
     main(['review', str(tmp_path / 'out.mcap'), '/cam/rgb', str(tmp_path / 'r.mp4'),
           '--detections', str(det)])
     assert (tmp_path / 'r.mp4').stat().st_size > 0
+
+
+def test_truncated_file(tmp_path):
+    src = tmp_path / 'in.mcap'
+    make_bag(src)
+    data = src.read_bytes()
+    cut = tmp_path / 'cut.mcap'
+    cut.write_bytes(data[:int(len(data) * 0.6)])
+    det = {'version': 1, 'topics': {}, 'manual': [
+        {'topic': '/cam/rgb', 'from': 0, 'to': 2_000_000_000, 'box': [10, 8, 30, 28]}]}
+    stats = process.apply(str(cut), str(tmp_path / 'out.mcap'), det)
+    assert stats.truncated
+    msgs = read_all(tmp_path / 'out.mcap')[0]
+    assert 0 < len(msgs) < 40
+    assert stats.modified['/cam/rgb'] == stats.frames['/cam/rgb'] > 0
+
+
+def _bag_with_video(path):
+    with open(path, 'wb') as f:
+        w = Writer(f, compression=CompressionType.NONE)
+        w.start(profile='ros2', library='test')
+        s_vid = w.register_schema('foxglove_msgs/msg/CompressedVideo', 'ros2msg', b'v')
+        s_str = w.register_schema('std_msgs/msg/String', 'ros2msg', b'z')
+        c_vid = w.register_channel('/cam/h264', 'cdr', s_vid)
+        c_str = w.register_channel('/chatter', 'cdr', s_str)
+        w.add_message(c_vid, 1, b'\x00\x01\x00\x00video', 1)
+        w.add_message(c_str, 2, b'\x00\x01\x00\x00text', 2)
+        w.finish()
+
+
+def test_unsupported_video_topics(tmp_path):
+    src = tmp_path / 'in.mcap'
+    _bag_with_video(src)
+    det = {'version': 1, 'topics': {}, 'manual': []}
+    with pytest.raises(process.UnprocessedTopics):
+        process.apply(str(src), str(tmp_path / 'a.mcap'), det)
+    process.apply(str(src), str(tmp_path / 'b.mcap'), det, process.Options(drop='h264'))
+    assert [m[0] for m in read_all(tmp_path / 'b.mcap')[0]] == ['/chatter']
+    stats = process.apply(str(src), str(tmp_path / 'c.mcap'), det,
+                          process.Options(ignore_unsupported=True))
+    assert stats.ignored and len(read_all(tmp_path / 'c.mcap')[0]) == 2

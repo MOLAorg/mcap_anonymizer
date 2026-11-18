@@ -24,6 +24,7 @@ class ImageView:
     width: int = 0
     encoding: str = ''   # Image: pixel encoding; CompressedImage: format string
     step: int = 0
+    bigendian: bool = False
     data_offset: int = 0  # offset of the first data byte in the serialized message
     data_len: int = 0
     compressed: bool = False
@@ -84,7 +85,7 @@ def parse(buf: bytes, compressed: bool) -> ImageView:
         v.height = c.u32()
         v.width = c.u32()
         v.encoding = c.string()
-        c.u8()  # is_bigendian
+        v.bigendian = bool(c.u8())
         v.step = c.u32()
     v.data_len = c.u32()
     v.data_offset = c.pos

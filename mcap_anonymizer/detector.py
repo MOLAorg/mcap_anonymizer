@@ -1,8 +1,8 @@
-"""CenterFace face detector (ONNX).
+"""CenterFace face detector (ONNX model), run with OpenCV DNN or onnxruntime.
 
 Based on the CenterFace reference code (https://github.com/Star-Clouds/CenterFace, MIT) and its
-adaptation in deface (https://github.com/ORB-HD/deface, MIT). The model file is an unmodified
-copy of `centerface_bnmerged.onnx` from CenterFace.
+adaptation in deface (https://github.com/ORB-HD/deface, MIT). The model file is CenterFace's
+`centerface_bnmerged.onnx` with its input and output sizes declared as dynamic.
 """
 
 import os
@@ -11,20 +11,7 @@ import cv2
 import numpy as np
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'centerface.onnx')
-
-
-def _dynamic_model(path):
-    import onnx
-    from onnx.tools.update_model_dims import update_inputs_outputs_dims
-
-    model = onnx.load(path)
-    in_dims = {n.name: [d.dim_value for d in n.type.tensor_type.shape.dim] for n in model.graph.input}
-    out_dims = {n.name: [d.dim_value for d in n.type.tensor_type.shape.dim]
-                for n in model.graph.output}
-    in_dims['input.1'] = ['B', 3, 'H', 'W']
-    out_dims.update({'537': ['B', 1, 'h', 'w'], '538': ['B', 2, 'h', 'w'],
-                     '539': ['B', 2, 'h', 'w'], '540': ['B', 10, 'h', 'w']})
-    return update_inputs_outputs_dims(model, in_dims, out_dims).SerializeToString()
+OUTPUTS = ['537', '538', '539', '540']
 
 
 def nms(boxes, scores, thresh):
@@ -45,25 +32,56 @@ def nms(boxes, scores, thresh):
     return np.array(keep, dtype=int)
 
 
-class CenterFace:
-    def __init__(self, model_path=MODEL_PATH, threads=0, device='auto'):
+def _onnxruntime():
+    try:
         import onnxruntime
+        return onnxruntime
+    except ImportError:
+        return None
 
-        onnxruntime.set_default_logger_severity(3)
-        opts = onnxruntime.SessionOptions()
+
+class CenterFace:
+    """backend: 'auto' (onnxruntime if installed, else OpenCV), 'opencv' or 'onnxruntime'.
+    device: 'auto', 'cpu' or 'cuda' (CUDA needs onnxruntime-gpu)."""
+
+    def __init__(self, model_path=MODEL_PATH, threads=0, device='auto', backend='auto'):
+        ort = _onnxruntime()
+        if backend == 'auto':
+            backend = 'onnxruntime' if ort else 'opencv'
+        if device == 'cuda' and backend == 'opencv':
+            raise RuntimeError('--device cuda needs onnxruntime-gpu')
+        self.backend = backend
+        self.device = 'cpu'
+        if backend == 'opencv':
+            if threads > 0:
+                cv2.setNumThreads(threads)
+            self.net = cv2.dnn.readNetFromONNX(model_path)
+            return
+        if ort is None:
+            raise RuntimeError('onnxruntime is not installed')
+        ort.set_default_logger_severity(3)
+        opts = ort.SessionOptions()
         if threads > 0:
             opts.intra_op_num_threads = threads
         providers = ['CPUExecutionProvider']
-        if device in ('auto', 'cuda') and \
-                'CUDAExecutionProvider' in onnxruntime.get_available_providers():
-            if hasattr(onnxruntime, 'preload_dlls'):
-                onnxruntime.preload_dlls()  # CUDA libraries installed with pip
+        if device in ('auto', 'cuda') and 'CUDAExecutionProvider' in ort.get_available_providers():
+            if hasattr(ort, 'preload_dlls'):
+                ort.preload_dlls()  # CUDA libraries installed with pip
             providers.insert(0, 'CUDAExecutionProvider')
         elif device == 'cuda':
             raise RuntimeError('CUDA requested but onnxruntime-gpu is not available')
-        self.sess = onnxruntime.InferenceSession(_dynamic_model(model_path), opts,
-                                                 providers=providers)
-        self.device = 'cuda' if self.sess.get_providers()[0] == 'CUDAExecutionProvider' else 'cpu'
+        self.sess = ort.InferenceSession(model_path, opts, providers=providers)
+        if self.sess.get_providers()[0] == 'CUDAExecutionProvider':
+            self.device = 'cuda'
+
+    def describe(self):
+        return f'{self.backend} on {self.device}'
+
+    def _run(self, blob):
+        if self.backend == 'opencv':
+            self.net.setInput(blob)
+            return self.net.forward(OUTPUTS)
+        return self.sess.run(OUTPUTS, {'input.1': blob})
 
     def __call__(self, rgb: np.ndarray, threshold=0.2, upscale=1.0):
         """Face boxes [[x1, y1, x2, y2, score], ...] in pixels of `rgb` (H x W x 3, uint8)."""
@@ -72,7 +90,7 @@ class CenterFace:
         h = int(np.ceil(h0 * upscale / 32) * 32)
         blob = cv2.dnn.blobFromImage(rgb, scalefactor=1.0, size=(w, h), mean=(0, 0, 0),
                                      swapRB=False, crop=False)
-        heatmap, scale, offset, _ = self.sess.run(['537', '538', '539', '540'], {'input.1': blob})
+        heatmap, scale, offset, _ = self._run(blob)
         heat = heatmap[0, 0]
         c0, c1 = np.where(heat > threshold)
         if len(c0) == 0:

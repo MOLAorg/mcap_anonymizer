@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mcap_anonymizer</name>
+  <version>0.1.0</version>
+  <description>
+    Blurs the faces in the camera images of MCAP files (ROS 2 bags), keeping everything else
+    unchanged (raw images stay bit-exact outside the faces).
+  </description>
+
+  <maintainer email="joseluisblancoc@gmail.com">Jose Luis Blanco-Claraco</maintainer>
+  <author email="joseluisblancoc@gmail.com">Jose Luis Blanco-Claraco</author>
+  <license file="LICENSE">BSD-3-Clause</license>
+
+  <url type="website">https://github.com/MOLAorg/mcap_anonymizer</url>
+  <url type="repository">https://github.com/MOLAorg/mcap_anonymizer</url>
+  <url type="bugtracker">https://github.com/MOLAorg/mcap_anonymizer/issues</url>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
