@@ -185,12 +185,12 @@ def _jpeg(img, q=90):
     return b.getvalue()
 
 
-def make_bag(path):
+def make_bag(path, compression=CompressionType.NONE):
     rng = np.random.default_rng(1)
     bayer = rng.integers(0, 256, (48, 64), dtype=np.uint8)
     rgb = cv2.GaussianBlur(rng.integers(0, 256, (48, 64, 3), dtype=np.uint8), (0, 0), 2)
     with open(path, 'wb') as f:
-        w = Writer(f, compression=CompressionType.ZSTD, chunk_size=4096)
+        w = Writer(f, compression=compression, chunk_size=4096)
         w.start(profile='ros2', library='test')
         s_img = w.register_schema('sensor_msgs/msg/Image', 'ros2msg', b'x')
         s_cmp = w.register_schema('sensor_msgs/msg/CompressedImage', 'ros2msg', b'y')
@@ -226,10 +226,14 @@ def read_all(path):
     return msgs, meta, att, chans, comp, r
 
 
-def test_rewrite_keeps_everything_but_the_boxes(tmp_path):
+@pytest.mark.parametrize('compression', ['none', 'zstd', 'lz4'])
+def test_rewrite_keeps_everything_but_the_boxes(tmp_path, compression):
+    if compression != 'none':
+        pytest.importorskip({'zstd': 'zstandard', 'lz4': 'lz4'}[compression])
     src = tmp_path / 'in.mcap'
     dst = tmp_path / 'out.mcap'
-    make_bag(src)
+    make_bag(src, {'none': CompressionType.NONE, 'zstd': CompressionType.ZSTD,
+                   'lz4': CompressionType.LZ4}[compression])
     box = [10, 8, 30, 28]
     det = {'version': 1, 'topics': {}, 'manual': [
         {'topic': t, 'from': 1_200_000_000, 'to': 1_400_000_000, 'box': box}
@@ -291,18 +295,19 @@ def test_cli_run_with_detector(tmp_path):
     assert (tmp_path / 'r.mp4').stat().st_size > 0
 
 
-def test_truncated_file(tmp_path):
+@pytest.mark.parametrize('fraction', [0.31, 0.5, 0.6, 0.77, 0.9, 0.97])
+def test_truncated_file(tmp_path, fraction):
     src = tmp_path / 'in.mcap'
     make_bag(src)
     data = src.read_bytes()
     cut = tmp_path / 'cut.mcap'
-    cut.write_bytes(data[:int(len(data) * 0.6)])
+    cut.write_bytes(data[:int(len(data) * fraction)])
     det = {'version': 1, 'topics': {}, 'manual': [
         {'topic': '/cam/rgb', 'from': 0, 'to': 2_000_000_000, 'box': [10, 8, 30, 28]}]}
     stats = process.apply(str(cut), str(tmp_path / 'out.mcap'), det)
     assert stats.truncated
     msgs = read_all(tmp_path / 'out.mcap')[0]
-    assert 0 < len(msgs) < 40
+    assert 0 < len(msgs) <= 40
     assert stats.modified['/cam/rgb'] == stats.frames['/cam/rgb'] > 0
 
 

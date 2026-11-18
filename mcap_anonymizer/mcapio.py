@@ -5,6 +5,7 @@ unfinished recordings (no summary, or a truncated last chunk) can be processed t
 stops at the first incomplete or corrupted record, with a warning.
 """
 
+import struct
 import sys
 
 from ._vendor.mcap.exceptions import EndOfFile, RecordLengthLimitExceeded
@@ -14,7 +15,7 @@ from ._vendor.mcap.stream_reader import CRCValidationError, StreamReader, breaku
 
 _KEEP = (Header, Schema, Channel, Message, Attachment, Metadata)
 # Errors of an unfinished or damaged file (anything else, e.g. a missing decompressor, is raised)
-_TRUNCATION = (EndOfFile, RecordLengthLimitExceeded, CRCValidationError)
+_TRUNCATION = (EndOfFile, RecordLengthLimitExceeded, CRCValidationError, struct.error)
 
 
 class Records:
